@@ -5,6 +5,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        BUILDER_IMAGE: ${CLI_PROXY_BUILDER_IMAGE:-m.daocloud.io/docker.io/library/golang:1.26-alpine}
+        RUNTIME_IMAGE: ${CLI_PROXY_RUNTIME_IMAGE:-m.daocloud.io/docker.io/library/alpine:3.22.0}
         VERSION: ${VERSION:-dev}
         COMMIT: ${COMMIT:-none}
         BUILD_DATE: ${BUILD_DATE:-unknown}
