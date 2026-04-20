@@ -10,16 +10,19 @@ import (
 
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
-	Provider    string
-	Model       string
-	APIKey      string
-	AuthID      string
-	AuthIndex   string
-	Source      string
-	RequestedAt time.Time
-	Latency     time.Duration
-	Failed      bool
-	Detail      Detail
+	Provider           string
+	Model              string
+	APIKey             string
+	AuthID             string
+	AuthIndex          string
+	Source             string
+	ClientAPIKeyID     string
+	ClientAPIKeyMasked string
+	SessionIndex       string
+	RequestedAt        time.Time
+	Latency            time.Duration
+	Failed             bool
+	Detail             Detail
 }
 
 // Detail holds the token usage breakdown.

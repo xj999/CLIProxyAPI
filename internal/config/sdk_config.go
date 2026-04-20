@@ -4,6 +4,12 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+// APIKeyAliasEntry defines a display alias for a top-level client API key.
+type APIKeyAliasEntry struct {
+	APIKey string `yaml:"api-key" json:"api-key"`
+	Alias  string `yaml:"alias" json:"alias"`
+}
+
 // SDKConfig represents the application's configuration, loaded from a YAML file.
 type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
@@ -23,6 +29,9 @@ type SDKConfig struct {
 
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
+
+	// APIKeyAliases optionally assigns a display alias to a top-level client API key.
+	APIKeyAliases []APIKeyAliasEntry `yaml:"api-key-aliases,omitempty" json:"api-key-aliases,omitempty"`
 
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).

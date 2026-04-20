@@ -166,6 +166,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	reporter.SetSessionIndex(helps.ResolveUsageSessionIndex(ctx, req.Payload, opts))
 	defer reporter.TrackFailure(ctx, &err)
 
 	from := opts.SourceFormat

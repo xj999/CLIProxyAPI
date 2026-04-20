@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
@@ -16,30 +17,42 @@ import (
 )
 
 type UsageReporter struct {
-	provider    string
-	model       string
-	authID      string
-	authIndex   string
-	apiKey      string
-	source      string
-	requestedAt time.Time
-	once        sync.Once
+	provider           string
+	model              string
+	authID             string
+	authIndex          string
+	apiKey             string
+	clientAPIKeyID     string
+	clientAPIKeyMasked string
+	sessionIndex       string
+	source             string
+	requestedAt        time.Time
+	once               sync.Once
 }
 
 func NewUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *UsageReporter {
 	apiKey := APIKeyFromContext(ctx)
 	reporter := &UsageReporter{
-		provider:    provider,
-		model:       model,
-		requestedAt: time.Now(),
-		apiKey:      apiKey,
-		source:      resolveUsageSource(auth, apiKey),
+		provider:           provider,
+		model:              model,
+		requestedAt:        time.Now(),
+		apiKey:             apiKey,
+		clientAPIKeyID:     util.NormalizeClientAPIKeyID(apiKey),
+		clientAPIKeyMasked: util.MaskClientAPIKey(apiKey),
+		source:             resolveUsageSource(auth, apiKey),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
 	}
 	return reporter
+}
+
+func (r *UsageReporter) SetSessionIndex(sessionIndex string) {
+	if r == nil {
+		return
+	}
+	r.sessionIndex = strings.TrimSpace(sessionIndex)
 }
 
 func (r *UsageReporter) Publish(ctx context.Context, detail usage.Detail) {
@@ -92,16 +105,19 @@ func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool) usage.Reco
 		return usage.Record{Detail: detail, Failed: failed}
 	}
 	return usage.Record{
-		Provider:    r.provider,
-		Model:       r.model,
-		Source:      r.source,
-		APIKey:      r.apiKey,
-		AuthID:      r.authID,
-		AuthIndex:   r.authIndex,
-		RequestedAt: r.requestedAt,
-		Latency:     r.latency(),
-		Failed:      failed,
-		Detail:      detail,
+		Provider:           r.provider,
+		Model:              r.model,
+		Source:             r.source,
+		APIKey:             r.apiKey,
+		AuthID:             r.authID,
+		AuthIndex:          r.authIndex,
+		ClientAPIKeyID:     r.clientAPIKeyID,
+		ClientAPIKeyMasked: r.clientAPIKeyMasked,
+		SessionIndex:       r.sessionIndex,
+		RequestedAt:        r.requestedAt,
+		Latency:            r.latency(),
+		Failed:             failed,
+		Detail:             detail,
 	}
 }
 
