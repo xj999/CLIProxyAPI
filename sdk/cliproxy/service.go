@@ -8,14 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
-	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/wsrelay"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -89,6 +91,9 @@ type Service struct {
 
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
+
+	// usagePersister persists in-memory usage statistics across restarts.
+	usagePersister *internalusage.StatisticsPersister
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -479,6 +484,9 @@ func (s *Service) Run(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
+	if err := s.startUsagePersistence(); err != nil {
+		log.Warnf("failed to initialize usage persistence: %v", err)
+	}
 	usage.StartDefault(ctx)
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -789,8 +797,46 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		usage.StopDefault()
+		if err := s.stopUsagePersistence(); err != nil {
+			log.Errorf("failed to stop usage persistence: %v", err)
+			if shutdownErr == nil {
+				shutdownErr = err
+			}
+		}
 	})
 	return shutdownErr
+}
+
+func (s *Service) startUsagePersistence() error {
+	if s == nil || s.cfg == nil || !s.cfg.UsageStatisticsEnabled {
+		return nil
+	}
+	if s.usagePersister != nil {
+		return nil
+	}
+
+	path := filepath.Join(logging.ResolveLogDirectory(s.cfg), "usage-statistics.json")
+	persister := internalusage.NewStatisticsPersister(internalusage.GetRequestStatistics(), path)
+	if _, err := persister.Load(); err != nil {
+		log.WithError(err).Warnf("usage persistence restore failed from %s", path)
+	}
+	internalusage.SetDefaultStatisticsPersister(persister)
+	persister.Start()
+	s.usagePersister = persister
+	log.Infof("usage statistics persistence enabled at %s", path)
+	return nil
+}
+
+func (s *Service) stopUsagePersistence() error {
+	if s == nil || s.usagePersister == nil {
+		internalusage.SetDefaultStatisticsPersister(nil)
+		return nil
+	}
+
+	persister := s.usagePersister
+	s.usagePersister = nil
+	internalusage.SetDefaultStatisticsPersister(nil)
+	return persister.Stop()
 }
 
 func (s *Service) ensureAuthDir() error {
