@@ -28,12 +28,3 @@ services:
       - ./logs:/CLIProxyAPI/logs
       - ./static:/CLIProxyAPI/static
     restart: unless-stopped
-
-  octopus:
-    image: bestrui/octopus
-    container_name: octopus
-    ports:
-      - "8888:8080"
-    volumes:
-      - /Users/midai/Documents/octopus/data:/app/data
-    restart: unless-stopped
