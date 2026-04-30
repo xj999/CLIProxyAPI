@@ -1125,6 +1125,14 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 	s.wsAuthChanged = fn
 }
 
+// SetUsageStore updates the management handler usage store reference.
+func (s *Server) SetUsageStore(store *usage.SQLiteStore) {
+	if s == nil || s.mgmt == nil {
+		return
+	}
+	s.mgmt.SetUsageStore(store)
+}
+
 // (management handlers moved to internal/api/handlers/management)
 
 // AuthMiddleware returns a Gin middleware handler that authenticates requests

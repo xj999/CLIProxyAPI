@@ -93,8 +93,8 @@ type Service struct {
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
 
-	// usagePersister persists in-memory usage statistics across restarts.
-	usagePersister *internalusage.StatisticsPersister
+	// usageStore persists and queries usage statistics across restarts.
+	usageStore *internalusage.SQLiteStore
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -530,6 +530,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
 	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
+	if s.server != nil && s.usageStore != nil {
+		s.server.SetUsageStore(s.usageStore)
+	}
 
 	if s.authManager == nil {
 		s.authManager = newDefaultAuthManager()
@@ -812,32 +815,71 @@ func (s *Service) startUsagePersistence() error {
 	if s == nil || s.cfg == nil || !s.cfg.UsageStatisticsEnabled {
 		return nil
 	}
-	if s.usagePersister != nil {
+	if s.usageStore != nil {
 		return nil
 	}
 
-	path := filepath.Join(logging.ResolveLogDirectory(s.cfg), "usage-statistics.json")
-	persister := internalusage.NewStatisticsPersister(internalusage.GetRequestStatistics(), path)
-	if _, err := persister.Load(); err != nil {
-		log.WithError(err).Warnf("usage persistence restore failed from %s", path)
+	path := filepath.Join(logging.ResolveLogDirectory(s.cfg), "usage.sqlite")
+	store, err := internalusage.NewSQLiteStore(path, internalusage.SQLiteStoreOptions{})
+	if err != nil {
+		return err
 	}
-	internalusage.SetDefaultStatisticsPersister(persister)
-	persister.Start()
-	s.usagePersister = persister
-	log.Infof("usage statistics persistence enabled at %s", path)
+	legacyPath := filepath.Join(logging.ResolveLogDirectory(s.cfg), "usage-statistics.json")
+	if err := migrateLegacyUsageSnapshotIfNeeded(store, legacyPath); err != nil {
+		_ = store.Close()
+		return err
+	}
+	internalusage.SetDefaultSQLiteStore(store)
+	s.usageStore = store
+	if s.server != nil {
+		s.server.SetUsageStore(store)
+	}
+	log.Infof("usage statistics sqlite store enabled at %s", path)
 	return nil
 }
 
 func (s *Service) stopUsagePersistence() error {
-	if s == nil || s.usagePersister == nil {
-		internalusage.SetDefaultStatisticsPersister(nil)
+	if s == nil || s.usageStore == nil {
+		internalusage.SetDefaultSQLiteStore(nil)
 		return nil
 	}
 
-	persister := s.usagePersister
-	s.usagePersister = nil
-	internalusage.SetDefaultStatisticsPersister(nil)
-	return persister.Stop()
+	store := s.usageStore
+	s.usageStore = nil
+	internalusage.SetDefaultSQLiteStore(nil)
+	if s.server != nil {
+		s.server.SetUsageStore(nil)
+	}
+	return store.Close()
+}
+
+func migrateLegacyUsageSnapshotIfNeeded(store *internalusage.SQLiteStore, legacyPath string) error {
+	if store == nil || legacyPath == "" {
+		return nil
+	}
+
+	hasData, err := store.HasData(context.Background())
+	if err != nil {
+		return fmt.Errorf("check usage sqlite contents: %w", err)
+	}
+	if hasData {
+		return nil
+	}
+
+	snapshot, loaded, err := internalusage.LoadStatisticsSnapshot(legacyPath)
+	if err != nil {
+		return fmt.Errorf("load legacy usage snapshot: %w", err)
+	}
+	if !loaded {
+		return nil
+	}
+
+	merged, err := store.ImportSnapshot(snapshot)
+	if err != nil {
+		return fmt.Errorf("import legacy usage snapshot into sqlite: %w", err)
+	}
+	log.Infof("usage statistics migrated from %s into sqlite (added=%d skipped=%d)", legacyPath, merged.Added, merged.Skipped)
+	return nil
 }
 
 func (s *Service) ensureAuthDir() error {

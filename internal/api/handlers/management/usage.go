@@ -23,7 +23,17 @@ type usageImportPayload struct {
 // GetUsageStatistics returns the in-memory request statistics snapshot.
 func (h *Handler) GetUsageStatistics(c *gin.Context) {
 	var snapshot usage.StatisticsSnapshot
-	if h != nil && h.usageStats != nil {
+	if h != nil && h.usageStore != nil {
+		rangeKey := c.DefaultQuery("range", "24h")
+		queried, err := h.usageStore.QuerySnapshot(usage.UsageQuery{
+			Range: rangeKey,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		snapshot = queried
+	} else if h != nil && h.usageStats != nil {
 		snapshot = h.usageStats.Snapshot()
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -35,7 +45,16 @@ func (h *Handler) GetUsageStatistics(c *gin.Context) {
 // ExportUsageStatistics returns a complete usage snapshot for backup/migration.
 func (h *Handler) ExportUsageStatistics(c *gin.Context) {
 	var snapshot usage.StatisticsSnapshot
-	if h != nil && h.usageStats != nil {
+	if h != nil && h.usageStore != nil {
+		queried, err := h.usageStore.QuerySnapshot(usage.UsageQuery{
+			Range: "all",
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		snapshot = queried
+	} else if h != nil && h.usageStats != nil {
 		snapshot = h.usageStats.Snapshot()
 	}
 	c.JSON(http.StatusOK, usageExportPayload{
@@ -47,7 +66,7 @@ func (h *Handler) ExportUsageStatistics(c *gin.Context) {
 
 // ImportUsageStatistics merges a previously exported usage snapshot into memory.
 func (h *Handler) ImportUsageStatistics(c *gin.Context) {
-	if h == nil || h.usageStats == nil {
+	if h == nil || (h.usageStats == nil && h.usageStore == nil) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "usage statistics unavailable"})
 		return
 	}
@@ -68,9 +87,27 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 		return
 	}
 
-	result := h.usageStats.MergeSnapshot(payload.Usage)
-	usage.MarkStatisticsDirty()
-	snapshot := h.usageStats.Snapshot()
+	var (
+		result   usage.MergeResult
+		snapshot usage.StatisticsSnapshot
+	)
+	if h.usageStore != nil {
+		merged, err := h.usageStore.ImportSnapshot(payload.Usage)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		result = merged
+		snapshot, err = h.usageStore.QuerySnapshot(usage.UsageQuery{Range: "all"})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else {
+		result = h.usageStats.MergeSnapshot(payload.Usage)
+		usage.MarkStatisticsDirty()
+		snapshot = h.usageStats.Snapshot()
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"added":           result.Added,
 		"skipped":         result.Skipped,

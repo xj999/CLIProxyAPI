@@ -1,0 +1,196 @@
+package usage
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+	"time"
+
+	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+)
+
+func TestSQLiteStoreQuerySnapshotByRange(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "usage.sqlite"), SQLiteStoreOptions{
+		RecentDetailRetention: 7 * 24 * time.Hour,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore error: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close error: %v", err)
+		}
+	}()
+
+	records := []coreusage.Record{
+		{
+			APIKey:             "client-a",
+			Model:              "gpt-5.4",
+			Source:             "provider-a",
+			AuthIndex:          "auth-a",
+			ClientAPIKeyID:     "k:client-a",
+			ClientAPIKeyMasked: "cl*****-a",
+			RequestedAt:        now.Add(-2 * time.Hour),
+			Latency:            1500 * time.Millisecond,
+			Detail: coreusage.Detail{
+				InputTokens:  100,
+				OutputTokens: 20,
+				TotalTokens:  120,
+			},
+		},
+		{
+			APIKey:             "client-a",
+			Model:              "gpt-5.4",
+			Source:             "provider-a",
+			AuthIndex:          "auth-a",
+			ClientAPIKeyID:     "k:client-a",
+			ClientAPIKeyMasked: "cl*****-a",
+			RequestedAt:        now.Add(-25 * time.Hour),
+			Latency:            2 * time.Second,
+			Failed:             true,
+			Detail: coreusage.Detail{
+				InputTokens:  80,
+				OutputTokens: 0,
+				TotalTokens:  80,
+			},
+		},
+		{
+			APIKey:             "client-a",
+			Model:              "gpt-5.5",
+			Source:             "provider-b",
+			AuthIndex:          "auth-b",
+			ClientAPIKeyID:     "k:client-a",
+			ClientAPIKeyMasked: "cl*****-a",
+			RequestedAt:        now.Add(-10 * 24 * time.Hour),
+			Latency:            3 * time.Second,
+			Detail: coreusage.Detail{
+				InputTokens:  200,
+				OutputTokens: 40,
+				TotalTokens:  240,
+			},
+		},
+	}
+	for _, record := range records {
+		if err := store.Record(context.Background(), record); err != nil {
+			t.Fatalf("Record error: %v", err)
+		}
+	}
+
+	last24h, err := store.QuerySnapshot(UsageQuery{
+		Range: "24h",
+		Now:   now,
+	})
+	if err != nil {
+		t.Fatalf("QuerySnapshot(24h) error: %v", err)
+	}
+	if last24h.TotalRequests != 1 {
+		t.Fatalf("24h total_requests = %d, want 1", last24h.TotalRequests)
+	}
+	if last24h.SuccessCount != 1 || last24h.FailureCount != 0 {
+		t.Fatalf("24h success/failure = %d/%d, want 1/0", last24h.SuccessCount, last24h.FailureCount)
+	}
+	if got := len(last24h.APIs["client-a"].Models["gpt-5.4"].Details); got != 1 {
+		t.Fatalf("24h details len = %d, want 1", got)
+	}
+
+	allTime, err := store.QuerySnapshot(UsageQuery{
+		Range: "all",
+		Now:   now,
+	})
+	if err != nil {
+		t.Fatalf("QuerySnapshot(all) error: %v", err)
+	}
+	if allTime.TotalRequests != 3 {
+		t.Fatalf("all total_requests = %d, want 3", allTime.TotalRequests)
+	}
+	if allTime.SuccessCount != 2 || allTime.FailureCount != 1 {
+		t.Fatalf("all success/failure = %d/%d, want 2/1", allTime.SuccessCount, allTime.FailureCount)
+	}
+	if got := allTime.TotalTokens; got != 440 {
+		t.Fatalf("all total_tokens = %d, want 440", got)
+	}
+	if got := len(allTime.APIs["client-a"].Models["gpt-5.5"].Details); got != 0 {
+		t.Fatalf("all old detail retention len = %d, want 0", got)
+	}
+	if got := allTime.APIs["client-a"].Models["gpt-5.5"].TotalRequests; got != 1 {
+		t.Fatalf("all gpt-5.5 total_requests = %d, want 1", got)
+	}
+}
+
+func TestSQLiteStoreImportSnapshotPreservesRecentDetailsOnly(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "usage.sqlite"), SQLiteStoreOptions{
+		RecentDetailRetention: 7 * 24 * time.Hour,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore error: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close error: %v", err)
+		}
+	}()
+
+	snapshot := StatisticsSnapshot{
+		APIs: map[string]APISnapshot{
+			"client-import": {
+				Models: map[string]ModelSnapshot{
+					"claude-opus-4-7": {
+						Details: []RequestDetail{
+							{
+								Timestamp: now.Add(-48 * time.Hour),
+								Source:    "provider-c",
+								AuthIndex: "auth-c",
+								Tokens: TokenStats{
+									InputTokens:  50,
+									OutputTokens: 10,
+									TotalTokens:  60,
+								},
+							},
+							{
+								Timestamp: now.Add(-14 * 24 * time.Hour),
+								Source:    "provider-c",
+								AuthIndex: "auth-c",
+								Tokens: TokenStats{
+									InputTokens:  30,
+									OutputTokens: 5,
+									TotalTokens:  35,
+								},
+								Failed: true,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := store.ImportSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("ImportSnapshot error: %v", err)
+	}
+	if result.Added != 2 || result.Skipped != 0 {
+		t.Fatalf("ImportSnapshot result = %+v, want added=2 skipped=0", result)
+	}
+
+	queried, err := store.QuerySnapshot(UsageQuery{
+		Range: "all",
+		Now:   now,
+	})
+	if err != nil {
+		t.Fatalf("QuerySnapshot(all) error: %v", err)
+	}
+	if queried.TotalRequests != 2 {
+		t.Fatalf("all total_requests = %d, want 2", queried.TotalRequests)
+	}
+	if got := len(queried.APIs["client-import"].Models["claude-opus-4-7"].Details); got != 1 {
+		t.Fatalf("recent details len = %d, want 1", got)
+	}
+}

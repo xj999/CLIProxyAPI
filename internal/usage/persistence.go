@@ -157,24 +157,41 @@ func (p *StatisticsPersister) Load() (bool, error) {
 		return false, nil
 	}
 
-	data, err := os.ReadFile(p.path)
+	snapshot, loaded, err := LoadStatisticsSnapshot(p.path)
+	if err != nil {
+		return false, err
+	}
+	if !loaded {
+		return false, nil
+	}
+
+	p.stats.MergeSnapshot(snapshot)
+	return true, nil
+}
+
+// LoadStatisticsSnapshot reads a persisted usage snapshot file without mutating any in-memory store.
+func LoadStatisticsSnapshot(path string) (StatisticsSnapshot, bool, error) {
+	if path == "" {
+		return StatisticsSnapshot{}, false, nil
+	}
+
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+			return StatisticsSnapshot{}, false, nil
 		}
-		return false, fmt.Errorf("read usage snapshot: %w", err)
+		return StatisticsSnapshot{}, false, fmt.Errorf("read usage snapshot: %w", err)
 	}
 
 	var snapshotFile statisticsSnapshotFile
 	if err = json.Unmarshal(data, &snapshotFile); err != nil {
-		return false, fmt.Errorf("decode usage snapshot: %w", err)
+		return StatisticsSnapshot{}, false, fmt.Errorf("decode usage snapshot: %w", err)
 	}
 	if snapshotFile.Version != 0 && snapshotFile.Version != statisticsSnapshotVersion {
-		return false, fmt.Errorf("unsupported usage snapshot version %d", snapshotFile.Version)
+		return StatisticsSnapshot{}, false, fmt.Errorf("unsupported usage snapshot version %d", snapshotFile.Version)
 	}
 
-	p.stats.MergeSnapshot(snapshotFile.Usage)
-	return true, nil
+	return snapshotFile.Usage, true, nil
 }
 
 // Flush writes the current statistics snapshot to disk.
