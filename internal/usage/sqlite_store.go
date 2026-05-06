@@ -174,21 +174,21 @@ func (s *SQLiteStore) QuerySnapshot(query UsageQuery) (StatisticsSnapshot, error
 	now = now.UTC()
 	rangeKey := strings.TrimSpace(query.Range)
 	if rangeKey == "" {
-		rangeKey = "24h"
+		rangeKey = "7d"
 	}
+	retentionStart := now.Add(-s.recentDetailRetention)
 
 	if rangeKey == "all" {
 		if err := s.fillDailySummary(&snapshot); err != nil {
 			return StatisticsSnapshot{}, err
 		}
-		detailStart := now.Add(-s.recentDetailRetention)
-		if err := s.fillRecentDetails(&snapshot, detailStart.UnixMilli(), now.UnixMilli()); err != nil {
+		if err := s.fillRecentDetails(&snapshot, retentionStart.UnixMilli(), now.UnixMilli()); err != nil {
 			return StatisticsSnapshot{}, err
 		}
 		if err := s.fillDailyTimeseries(&snapshot); err != nil {
 			return StatisticsSnapshot{}, err
 		}
-		if err := s.fillRecentHourTimeseries(&snapshot, detailStart.UnixMilli(), now.UnixMilli()); err != nil {
+		if err := s.fillRecentHourTimeseries(&snapshot, retentionStart.UnixMilli(), now.UnixMilli()); err != nil {
 			return StatisticsSnapshot{}, err
 		}
 		return snapshot, nil
@@ -200,6 +200,27 @@ func (s *SQLiteStore) QuerySnapshot(query UsageQuery) (StatisticsSnapshot, error
 	}
 	startMs := start.UnixMilli()
 	endMs := now.UnixMilli()
+	detailStart := maxTime(start, retentionStart)
+	detailStartMs := detailStart.UnixMilli()
+
+	if usesDailyAggregates(rangeKey) {
+		startDate := start.Format("2006-01-02")
+		endDate := now.Format("2006-01-02")
+		if err := s.fillDailySummaryByRange(&snapshot, startDate, endDate); err != nil {
+			return StatisticsSnapshot{}, err
+		}
+		if err := s.fillRecentDetails(&snapshot, detailStartMs, endMs); err != nil {
+			return StatisticsSnapshot{}, err
+		}
+		if err := s.fillDailyTimeseriesByRange(&snapshot, startDate, endDate); err != nil {
+			return StatisticsSnapshot{}, err
+		}
+		if err := s.fillRecentHourTimeseries(&snapshot, detailStartMs, endMs); err != nil {
+			return StatisticsSnapshot{}, err
+		}
+		return snapshot, nil
+	}
+
 	if err := s.fillRecentSummary(&snapshot, startMs, endMs); err != nil {
 		return StatisticsSnapshot{}, err
 	}
@@ -375,7 +396,11 @@ func (s *SQLiteStore) insertDetail(ctx context.Context, apiKey, model string, de
 }
 
 func (s *SQLiteStore) fillDailySummary(snapshot *StatisticsSnapshot) error {
-	rows, err := s.db.Query(`
+	return s.fillDailySummaryByRange(snapshot, "", "")
+}
+
+func (s *SQLiteStore) fillDailySummaryByRange(snapshot *StatisticsSnapshot, startDate, endDate string) error {
+	query := `
 		SELECT
 			api_key,
 			model,
@@ -384,8 +409,15 @@ func (s *SQLiteStore) fillDailySummary(snapshot *StatisticsSnapshot) error {
 			SUM(CASE WHEN failed = 1 THEN requests ELSE 0 END),
 			SUM(total_tokens)
 		FROM usage_daily
-		GROUP BY api_key, model
-	`)
+	`
+	args := []any{}
+	if startDate != "" && endDate != "" {
+		query += ` WHERE usage_date >= ? AND usage_date <= ?`
+		args = append(args, startDate, endDate)
+	}
+	query += ` GROUP BY api_key, model`
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return fmt.Errorf("query usage daily summary: %w", err)
 	}
@@ -513,12 +545,22 @@ func (s *SQLiteStore) fillRecentDetails(snapshot *StatisticsSnapshot, startMs, e
 }
 
 func (s *SQLiteStore) fillDailyTimeseries(snapshot *StatisticsSnapshot) error {
-	rows, err := s.db.Query(`
+	return s.fillDailyTimeseriesByRange(snapshot, "", "")
+}
+
+func (s *SQLiteStore) fillDailyTimeseriesByRange(snapshot *StatisticsSnapshot, startDate, endDate string) error {
+	query := `
 		SELECT usage_date, SUM(requests), SUM(total_tokens)
 		FROM usage_daily
-		GROUP BY usage_date
-		ORDER BY usage_date ASC
-	`)
+	`
+	args := []any{}
+	if startDate != "" && endDate != "" {
+		query += ` WHERE usage_date >= ? AND usage_date <= ?`
+		args = append(args, startDate, endDate)
+	}
+	query += ` GROUP BY usage_date ORDER BY usage_date ASC`
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return fmt.Errorf("query usage daily timeseries: %w", err)
 	}
@@ -597,10 +639,30 @@ func resolveRangeStart(rangeKey string, now time.Time) (time.Time, error) {
 	case "24h":
 		return now.Add(-24 * time.Hour), nil
 	case "7d":
-		return now.Add(-7 * 24 * time.Hour), nil
+		start := now
+		start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, start.Location())
+		return start.AddDate(0, 0, -6), nil
+	case "this_month":
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()), nil
 	default:
 		return time.Time{}, fmt.Errorf("unsupported usage range %q", rangeKey)
 	}
+}
+
+func usesDailyAggregates(rangeKey string) bool {
+	switch rangeKey {
+	case "today", "7d", "this_month":
+		return true
+	default:
+		return false
+	}
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 func addSnapshotSummary(snapshot *StatisticsSnapshot, apiKey, model string, totalRequests, successCount, failureCount, totalTokens int64) {

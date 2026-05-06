@@ -24,7 +24,7 @@ type usageImportPayload struct {
 func (h *Handler) GetUsageStatistics(c *gin.Context) {
 	var snapshot usage.StatisticsSnapshot
 	if h != nil && h.usageStore != nil {
-		rangeKey := c.DefaultQuery("range", "24h")
+		rangeKey := c.DefaultQuery("range", "7d")
 		queried, err := h.usageStore.QuerySnapshot(usage.UsageQuery{
 			Range: rangeKey,
 		})
