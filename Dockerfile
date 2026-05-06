@@ -1,5 +1,5 @@
 ARG BUILDER_IMAGE=m.daocloud.io/docker.io/library/golang:1.26-alpine
-ARG RUNTIME_IMAGE=m.daocloud.io/docker.io/library/alpine:3.22.0
+ARG RUNTIME_IMAGE=m.daocloud.io/docker.io/library/alpine:3.23.0
 
 FROM ${BUILDER_IMAGE} AS builder
 
